@@ -682,14 +682,25 @@ final class BridgeAppModel: NSObject, ObservableObject, XiaomiBluetoothBridgeDel
     private let macMicrophoneHotKey = MacMicrophoneShortcut()
     private var macMicrophoneShortcutSubscription: AnyCancellable?
     private var macMicrophoneDrainCompletion: ((Bool) -> Void)?
+    private var macMicrophoneOwnsVoiceSession = false
+    private var mixedMacMicrophoneSamples = 0
+    private var mixedMacMicrophoneEnqueueFailures = 0
     private lazy var macMicrophoneSession: MacMicrophoneSessionController = {
         let session = MacMicrophoneSessionController(
             isBusy: { [weak self] in
                 guard let self else { return true }
-                return self.isStreaming || self.isPlayingTestTone || self.systemAudioSuspensionState.isSuspended ||
-                    self.pendingBluetoothVoiceStartIdentifier != nil || !self.pendingAppleRemoteVoiceStarts.isEmpty ||
+                if self.isPlayingTestTone || self.systemAudioSuspensionState.isSuspended ||
+                    self.longRecordingRequested || self.voiceFnTapSession.requiresCleanupBeforeMapping {
+                    return true
+                }
+                // An armed physical microphone may join an already active hardware voice
+                // session. Other concurrent voice/session transitions remain exclusive.
+                if self.isStreaming {
+                    return !self.hasMixableRemoteVoiceActivity
+                }
+                return self.pendingBluetoothVoiceStartIdentifier != nil || !self.pendingAppleRemoteVoiceStarts.isEmpty ||
                     self.pendingChromecastVoiceStart || self.pendingMobileVoiceStartSource != nil ||
-                    self.stoppingMobileVoiceSource != nil || self.longRecordingRequested ||
+                    self.stoppingMobileVoiceSource != nil ||
                     self.voiceKeyLatch.isHeld || self.voiceFnTapSession.requiresCleanupBeforeMapping
             },
             prepare: { [weak self] completion in self?.prepareMacMicrophone(completion: completion) },
@@ -699,11 +710,32 @@ final class BridgeAppModel: NSObject, ObservableObject, XiaomiBluetoothBridgeDel
                 self.macMicrophoneCapture.stop(completion: completion)
             },
             drain: { [weak self] completion in
-                guard let self, self.activeMobileVoiceSource == .macMicrophone else { completion(true); return }
-                self.macMicrophoneDrainCompletion = completion
-                self.stopPhoneVoice(source: .macMicrophone)
+                guard let self else { completion(false); return }
+                if self.macMicrophoneOwnsVoiceSession,
+                   self.activeMobileVoiceSource == .macMicrophone {
+                    self.macMicrophoneDrainCompletion = completion
+                    self.stopPhoneVoice(source: .macMicrophone)
+                } else {
+                    self.audioOutput.endSessionAfterDraining(
+                        source: "mac_microphone_mix",
+                        operationID: self.macMicrophoneSession.operationID
+                    ) { outcome in
+                        completion(outcome == .normal)
+                    }
+                }
             },
-            finish: { [weak self] in self?.releaseVirtualAudioOutputIfUnused(reason: "mac_microphone_stopped") }
+            finish: { [weak self] in
+                guard let self else { return }
+                if !self.macMicrophoneOwnsVoiceSession {
+                    AppLogger.shared.write(
+                        "MAC MICROPHONE MIX operation_id=\(self.macMicrophoneSession.operationID) " +
+                            "phase=completed result=stopped samples=\(self.mixedMacMicrophoneSamples) " +
+                            "enqueue_failures=\(self.mixedMacMicrophoneEnqueueFailures)"
+                    )
+                }
+                self.macMicrophoneOwnsVoiceSession = false
+                self.releaseVirtualAudioOutputIfUnused(reason: "mac_microphone_stopped")
+            }
         )
         session.onStateChange = { [weak self, weak session] state in
             guard let self, let session else { return }
@@ -925,6 +957,7 @@ final class BridgeAppModel: NSObject, ObservableObject, XiaomiBluetoothBridgeDel
                 completion()
                 return
             }
+            self.stopMixedMacMicrophoneIfNeeded()
             self.audioOutput.endSessionAfterDraining(
                 source: "voice_fn_tap",
                 operationID: operationID
@@ -3250,18 +3283,56 @@ final class BridgeAppModel: NSObject, ObservableObject, XiaomiBluetoothBridgeDel
     private func startMacMicrophoneCapture(completion: @escaping (MacMicrophoneFailure?) -> Void) {
         guard let input = macMicrophoneDevices.first(where: {
             $0.uid == settings.macMicrophoneInputUID
-        }), !isStreaming, startPhoneVoice(source: .macMicrophone) == .started else {
+        }) else {
             completion(.inputUnavailable); return
         }
+        let joinsRemoteSession = isStreaming && hasMixableRemoteVoiceActivity
+        if !joinsRemoteSession {
+            guard !isStreaming, startPhoneVoice(source: .macMicrophone) == .started else {
+                completion(.busy); return
+            }
+        }
+        macMicrophoneOwnsVoiceSession = !joinsRemoteSession
+        mixedMacMicrophoneSamples = 0
+        mixedMacMicrophoneEnqueueFailures = 0
         let operation = macMicrophoneSession.operationID
-        AppLogger.shared.write("MAC MICROPHONE operation_id=\(operation) phase=route_ready voice_operation_id=\(activeMobileVoiceOperationID ?? "none") mode=physical_voice_key voice_key_injection=none key_event_passthrough=true target_activation=none target_response=unknown")
+        AppLogger.shared.write("MAC MICROPHONE operation_id=\(operation) phase=route_ready voice_operation_id=\(activeMobileVoiceOperationID ?? "none") mode=physical_voice_key voice_key_injection=none key_event_passthrough=true target_activation=none target_response=unknown audio_mode=\(joinsRemoteSession ? "mixed" : "standalone")")
         macMicrophoneCapture.start(input: input, operationID: operation,
             onSamples: { [weak self] samples in
-                self?.macMicrophoneSession.observePCM(samples)
-                self?.receivePhoneAudio(samples, source: .macMicrophone)
+                guard let self else { return }
+                self.macMicrophoneSession.observePCM(samples)
+                if self.macMicrophoneOwnsVoiceSession {
+                    self.receivePhoneAudio(samples, source: .macMicrophone)
+                } else {
+                    self.enqueueMixedMacMicrophoneAudio(samples)
+                }
             },
             onFailure: { [weak self] failure in self?.macMicrophoneSession.stop(failure: failure) },
             completion: completion)
+    }
+
+    private var hasMixableRemoteVoiceActivity: Bool {
+        bluetoothVoiceActive || !appleRemoteVoiceDevices.isEmpty || appleRemoteVoiceStopping ||
+            chromecastVoiceActive || chromecastVoiceStopping ||
+            activeMobileVoiceSource.map { $0 != .macMicrophone } == true
+    }
+
+    private func enqueueMixedMacMicrophoneAudio(_ samples: [Int16]) {
+        guard !samples.isEmpty, isStreaming, hasMixableRemoteVoiceActivity else { return }
+        let accepted = audioOutput.enqueue(
+            samples: samples,
+            deliveryGeneration: voiceAudioDeliveryDiagnostic.generation,
+            inputLane: .macMicrophone
+        )
+        mixedMacMicrophoneSamples += samples.count
+        if !accepted { mixedMacMicrophoneEnqueueFailures += 1 }
+        if mixedMacMicrophoneSamples == samples.count {
+            AppLogger.shared.write(
+                "MAC MICROPHONE MIX operation_id=\(macMicrophoneSession.operationID) " +
+                    "phase=first_audio result=\(accepted ? "accepted" : "rejected") " +
+                    "samples=\(samples.count) lane=mac_microphone"
+            )
+        }
     }
 
     /// 连接页唯一的音量滑块：立即作用到送往语音工具的声音，不需要重建音频链路。
@@ -6983,6 +7054,7 @@ final class BridgeAppModel: NSObject, ObservableObject, XiaomiBluetoothBridgeDel
                   self.appleRemoteVoiceStopping,
                   self.appleRemoteVoiceStopOperation == stopOperation
             else { return }
+            self.stopMixedMacMicrophoneIfNeeded()
             self.audioOutput.endSessionAfterDraining(
                 source: "apple_remote",
                 operationID: stopOperation,
@@ -7757,6 +7829,7 @@ final class BridgeAppModel: NSObject, ObservableObject, XiaomiBluetoothBridgeDel
         // reached the virtual microphone. This mirrors the Apple Remote and
         // Chromecast stop paths; flush is still false, so pending audio is
         // preserved rather than discarded.
+        stopMixedMacMicrophoneIfNeeded()
         audioOutput.endSessionAfterDraining(
             source: "bluetooth_voice_stop",
             operationID: UInt64(traceID),
@@ -9658,6 +9731,7 @@ final class BridgeAppModel: NSObject, ObservableObject, XiaomiBluetoothBridgeDel
                     }
                 }
             }
+            stopMixedMacMicrophoneIfNeeded()
             audioOutput.endSessionAfterDraining(source: source.logName, operationID: stopGeneration,
                 completion: completeDrain)
         }
@@ -10330,6 +10404,11 @@ final class BridgeAppModel: NSObject, ObservableObject, XiaomiBluetoothBridgeDel
         }
         transcriptCaptureCoordinator.startSession(sessionID: sessionID, startedAt: startedAt, source: source)
         isStreaming = true
+        if macMicrophoneEnabled, macMicrophoneState == .armed, hasMixableRemoteVoiceActivity {
+            // Drive the companion capture from the actual remote session lifecycle. This
+            // also covers remotes whose voice key is mapped below CGEvent visibility.
+            macMicrophoneSession.handleVoiceKey(pressed: true, gesture: .hold)
+        }
         if let activeMobileVoiceSource, activeMobileVoiceSource != .macMicrophone {
             voiceTargetActivityMonitor.start()
         }
@@ -10377,6 +10456,13 @@ final class BridgeAppModel: NSObject, ObservableObject, XiaomiBluetoothBridgeDel
         // 会话因别的原因结束（用户关闭语音、切换输入源）时，必须让 Chromecast 包内的
         // latched 状态同步清空；否则下一次点按会被误判成「结束」而不是「开始」。
         chromecastFeature.notifyHostVoiceSessionEnded()
+    }
+
+    private func stopMixedMacMicrophoneIfNeeded() {
+        guard !macMicrophoneOwnsVoiceSession,
+              macMicrophoneState == .preparing || macMicrophoneState == .recording
+        else { return }
+        macMicrophoneSession.handleVoiceKey(pressed: false, gesture: .hold)
     }
 
     private var currentVoiceUsageSource: UsageEventSource {
@@ -11026,6 +11112,7 @@ final class BridgeAppModel: NSObject, ObservableObject, XiaomiBluetoothBridgeDel
                 "pending_samples=\(outputBeforeStop.pendingSamples)"
         )
         // 尾包已经在 MIC_CLOSE 之前全部投递完毕，因此这里只做自然排空，绝不 flush。
+        stopMixedMacMicrophoneIfNeeded()
         audioOutput.endSessionAfterDraining(
             source: "chromecast",
             operationID: stopOperation,

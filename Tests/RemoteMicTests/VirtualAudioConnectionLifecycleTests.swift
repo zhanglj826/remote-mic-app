@@ -45,6 +45,29 @@ struct VirtualAudioConnectionLifecycleTests {
         #expect(VirtualAudioOutputLevelPolicy.clampedSample(0.5, scale: 0) == 0)
     }
 
+    @Test func physicalAndRemoteMicrophonesUseIndependentMixerLanes() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let output = try String(
+            contentsOf: root.appendingPathComponent("Sources/RemoteMic/AudioOutput.swift"),
+            encoding: .utf8
+        )
+        let model = try String(
+            contentsOf: root.appendingPathComponent("Sources/RemoteMic/BridgeAppModel.swift"),
+            encoding: .utf8
+        )
+
+        #expect(output.contains("case macMicrophone = \"mac_microphone\""))
+        #expect(output.contains("engine.attach(macMicrophonePlayer)"))
+        #expect(output.contains("engine.connect(macMicrophonePlayer, to: engine.mainMixerNode"))
+        #expect(output.contains("inputLane == .macMicrophone ? self.macMicrophonePlayer : self.player"))
+        #expect(model.contains("inputLane: .macMicrophone"))
+        #expect(model.contains("stopMixedMacMicrophoneIfNeeded()"))
+        #expect(model.contains("hasMixableRemoteVoiceActivity"))
+    }
+
     @Test func outputVolumeScalesDecodedSamplesWithClipping() {
         // 100% 时归一化后原样写缓冲，不引入额外增益。
         let identity = VirtualAudioOutputLevelPolicy.scaled([0, 1_000, -1_000], scale: 1)

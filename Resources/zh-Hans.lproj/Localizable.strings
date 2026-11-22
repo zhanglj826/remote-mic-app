@@ -1411,7 +1411,7 @@
 "audio.mac_microphone.start" = "用%@说话";
 "audio.mac_microphone.stop" = "停用%@说话";
 "audio.mac_microphone.error.no_audio" = "所选麦克风没有音频。请检查连接，或改用其他麦克风。";
-"audio.mac_microphone.help" = "仅在不使用遥控器时使用";
+"audio.mac_microphone.help" = "可与遥控器麦克风同时使用";
 "audio.mac_microphone.idle" = "未收音";
 "audio.mac_microphone.preparing" = "正在准备…";
 "audio.mac_microphone.recording" = "所选麦克风正在收音";

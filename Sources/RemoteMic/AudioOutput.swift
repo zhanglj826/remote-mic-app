@@ -831,6 +831,11 @@ enum DefaultInputFallbackPolicy {
 }
 
 final class VirtualAudioOutput {
+    enum InputLane: String {
+        case primary
+        case macMicrophone = "mac_microphone"
+    }
+
     private struct OutputState {
         var ready = false
         var healthy = false
@@ -857,6 +862,9 @@ final class VirtualAudioOutput {
 
     private var engine: AVAudioEngine?
     private var player: AVAudioPlayerNode?
+    /// A separate player is required for real mixing. Scheduling both sources on one
+    /// player serializes their buffers and makes one source lag behind the other.
+    private var macMicrophonePlayer: AVAudioPlayerNode?
     private var engineConfigurationObserver: NSObjectProtocol?
     private var engineConfigurationGeneration: UInt64 = 0
     private var rejectedWriteCount = 0
@@ -1118,12 +1126,15 @@ final class VirtualAudioOutput {
         let engine = AVAudioEngine()
         logStage("engine_created")
         let player = AVAudioPlayerNode()
+        let macMicrophonePlayer = AVAudioPlayerNode()
         logStage("player_created")
         logStage("attach_player")
         engine.attach(player)
+        engine.attach(macMicrophonePlayer)
         logStage("attach_player_completed")
         logStage("connect_mixer_call")
         engine.connect(player, to: engine.mainMixerNode, format: sourceFormat)
+        engine.connect(macMicrophonePlayer, to: engine.mainMixerNode, format: sourceFormat)
         logStage("connect_mixer_completed")
 
         logStage("open_output_unit")
@@ -1172,6 +1183,7 @@ final class VirtualAudioOutput {
             guard !token.isCancelled else { throw AudioEngineStartError.cancelled }
         } cleanup: {
             player.stop()
+            macMicrophonePlayer.stop()
             engine.stop()
             logger(
                 "AUDIO CONFIGURE cleanup operation_id=\(operationID) attempt=\(attempt) " +
@@ -1192,6 +1204,7 @@ final class VirtualAudioOutput {
             return .timedOut
         case .failed(let error):
             player.stop()
+            macMicrophonePlayer.stop()
             engine.stop()
             status = LocalizedMessage(
                 "audio.output.start_failed",
@@ -1209,8 +1222,9 @@ final class VirtualAudioOutput {
         }
 
         logStage("start_player")
-        guard AudioPlayerNodeSafety.play(player) else {
+        guard AudioPlayerNodeSafety.play(player), AudioPlayerNodeSafety.play(macMicrophonePlayer) else {
             player.stop()
+            macMicrophonePlayer.stop()
             engine.stop()
             status = LocalizedMessage("audio.output.selected_unavailable")
             logger(
@@ -1223,6 +1237,7 @@ final class VirtualAudioOutput {
         }
         self.engine = engine
         self.player = player
+        self.macMicrophonePlayer = macMicrophonePlayer
         updateOutputState { $0.selectedDevice = device }
         logStage("verify_output")
         refreshOutputStateOnEngineQueue()
@@ -1302,7 +1317,11 @@ final class VirtualAudioOutput {
     }
 
     @discardableResult
-    func enqueue(samples: [Int16], deliveryGeneration: Int = 0) -> Bool {
+    func enqueue(
+        samples: [Int16],
+        deliveryGeneration: Int = 0,
+        inputLane: InputLane = .primary
+    ) -> Bool {
         guard !samples.isEmpty else {
             logRejectedWrite(reason: "empty_samples")
             return false
@@ -1343,7 +1362,8 @@ final class VirtualAudioOutput {
             let isCurrent = generation == self.playbackGeneration
             self.playbackLock.unlock()
             // A preceding stop or explicit flush already accounted for an interrupted buffer.
-            guard isCurrent, let player = self.player else { return }
+            let player = inputLane == .macMicrophone ? self.macMicrophonePlayer : self.player
+            guard isCurrent, let player else { return }
             player.scheduleBuffer(
                 buffer,
                 at: nil,
@@ -1516,11 +1536,15 @@ final class VirtualAudioOutput {
         let restartPlayer = { [weak self] in
             guard let self,
                   let player = self.player,
+                  let macMicrophonePlayer = self.macMicrophonePlayer,
                   self.engine?.isRunning == true
             else { return }
             player.stop()
             player.reset()
-            guard AudioPlayerNodeSafety.play(player) else {
+            macMicrophonePlayer.stop()
+            macMicrophonePlayer.reset()
+            guard AudioPlayerNodeSafety.play(player),
+                  AudioPlayerNodeSafety.play(macMicrophonePlayer) else {
                 AppLogger.shared.write("AUDIO ERROR player_restart_exception state={\(self.diagnosticState())}")
                 self.stopOnEngineQueue()
                 self.onConfigurationChange?()
@@ -1591,8 +1615,10 @@ final class VirtualAudioOutput {
         }
         removeEngineConfigurationObserver()
         player?.stop()
+        macMicrophonePlayer?.stop()
         engine?.stop()
         player = nil
+        macMicrophonePlayer = nil
         engine = nil
         updateOutputState {
             $0.selectedDevice = nil
@@ -1898,7 +1924,7 @@ final class VirtualAudioOutput {
         let selected = selectedDevice
         let actual = currentOutputDevice()
         let running = engine?.isRunning == true
-        let playing = player?.isPlaying == true
+        let playing = player?.isPlaying == true && macMicrophonePlayer?.isPlaying == true
         let audibility = CoreAudioDeviceCatalog.virtualAudioAudibilitySnapshot(for: selected)
         let route = CoreAudioDeviceCatalog.routeDiagnostic()
         let healthy = VirtualAudioHealthPolicy.isConfigurationHealthy(
