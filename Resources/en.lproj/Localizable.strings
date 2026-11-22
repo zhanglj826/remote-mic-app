@@ -1494,7 +1494,8 @@
 "button_mapping.hold_profile_unavailable" = "This component version cannot save hold modes in button profiles. Update the component.";
 "button_mapping.hold.profile_repeat_only" = "Profiles only save repeat behaviors; set arrow-key hold in the default profile.";
 "audio.mac_microphone.armed" = "Standby";
-"audio.mac_microphone.voice_key" = "Voice shortcut";
+"audio.mac_microphone.voice_key" = "Keyboard/mouse trigger";
+"audio.mac_microphone.voice_gesture" = "Keyboard/mouse trigger mode";
 "audio.mac_microphone.voice_hold" = "Hold to speak; release to finish";
 "audio.mac_microphone.voice_toggle" = "Press to start; press again to finish";
 "audio.mac_microphone.error.input_monitoring" = "Cannot observe the voice shortcut. Allow Input Monitoring in System Settings and retry.";

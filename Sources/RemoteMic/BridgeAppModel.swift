@@ -3179,13 +3179,7 @@ final class BridgeAppModel: NSObject, ObservableObject, XiaomiBluetoothBridgeDel
     }
 
     var macMicrophoneVoiceGesture: VoiceGestureMode {
-        if let binding = settings.verifiedVoiceToolBinding,
-           binding.tool == settings.onboardingVoiceTool, binding.shortcut == settings.voiceKeyMode {
-            return binding.gestureMode
-        }
-        return settings.onboardingPreferredGesture ??
-            (settings.voiceFnTapModeEnabled ? .toggle :
-                VoiceToolAdapterProfile.profile(for: settings.onboardingVoiceTool).recommendedMode ?? .hold)
+        settings.macMicrophoneVoiceGesture
     }
 
     var macMicrophoneSelectedDevice: AudioDeviceInfo? {
@@ -3222,7 +3216,7 @@ final class BridgeAppModel: NSObject, ObservableObject, XiaomiBluetoothBridgeDel
                 AppLogger.shared.write("MAC MICROPHONE phase=rejected reason=input_unavailable")
                 return
             }
-            let mode = settings.voiceKeyMode
+            let mode = settings.macMicrophoneVoiceKeyMode
             let gesture = macMicrophoneVoiceGesture
             macMicrophoneVoiceKeyMonitor.onEdge = { [weak self] pressed, observedAt in
                 self?.macMicrophoneSession.handleVoiceKey(pressed: pressed, gesture: gesture, observedAt: observedAt)
@@ -3248,7 +3242,9 @@ final class BridgeAppModel: NSObject, ObservableObject, XiaomiBluetoothBridgeDel
 
     private func prepareMacMicrophone(completion: @escaping (MacMicrophoneFailure?) -> Void) {
         let operation = macMicrophoneSession.operationID
-        guard macMicrophoneVoiceKeyMonitor.start(mode: macMicrophoneMonitoredMode ?? settings.voiceKeyMode) else {
+        guard macMicrophoneVoiceKeyMonitor.start(
+            mode: macMicrophoneMonitoredMode ?? settings.macMicrophoneVoiceKeyMode
+        ) else {
             completion(.inputMonitoring)
             return
         }
@@ -4010,7 +4006,8 @@ final class BridgeAppModel: NSObject, ObservableObject, XiaomiBluetoothBridgeDel
         restartSiriRemote: Bool = true
     ) {
         if macMicrophoneEnabled,
-           macMicrophoneMonitoredMode != settings.voiceKeyMode || macMicrophoneMonitoredGesture != macMicrophoneVoiceGesture {
+           macMicrophoneMonitoredMode != settings.macMicrophoneVoiceKeyMode ||
+               macMicrophoneMonitoredGesture != macMicrophoneVoiceGesture {
             macMicrophoneSession.stop(failure: .interrupted)
         }
         let permissionSnapshot = HIDPermissionSnapshot.current

@@ -443,6 +443,17 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(macMicrophoneInputUID, forKey: "macMicrophoneInputUID") }
     }
 
+    /// Physical key observed to join the Mac microphone to voice input. This is
+    /// intentionally independent from `voiceKeyMode`, which is the key emitted
+    /// by a remote control to the configured voice tool.
+    @Published var macMicrophoneVoiceKeyMode: VoiceKeyMode {
+        didSet { defaults.set(macMicrophoneVoiceKeyMode.rawValue, forKey: "macMicrophoneVoiceKeyMode") }
+    }
+
+    @Published var macMicrophoneVoiceGesture: VoiceGestureMode {
+        didSet { defaults.set(macMicrophoneVoiceGesture.rawValue, forKey: "macMicrophoneVoiceGesture") }
+    }
+
     @Published var macMicrophoneShortcut: CustomKeyboardShortcut? {
         didSet {
             defaults.set(macMicrophoneShortcut.flatMap { try? JSONEncoder().encode($0) },
@@ -1045,6 +1056,12 @@ final class AppSettings: ObservableObject {
         macMicrophoneInputUID = defaults.string(forKey: "macMicrophoneInputUID") ?? ""
         macMicrophoneShortcut = Self.decodeSetting(CustomKeyboardShortcut.self,
             forKey: "macMicrophoneShortcut", from: defaults, corrupted: &corruptedKeys)
+        macMicrophoneVoiceKeyMode = VoiceKeyMode(
+            rawValue: defaults.string(forKey: "macMicrophoneVoiceKeyMode") ?? ""
+        ) ?? .rightOption
+        macMicrophoneVoiceGesture = VoiceGestureMode(
+            rawValue: defaults.string(forKey: "macMicrophoneVoiceGesture") ?? ""
+        ) ?? .toggle
         selectedAudioDeviceUID = persistedAudioDeviceUID
         lastKnownAudioDeviceUID = defaults.string(forKey: Keys.lastKnownAudioDeviceUID) ?? persistedAudioDeviceUID
         if defaults.string(forKey: Keys.lastKnownAudioDeviceUID) == nil,

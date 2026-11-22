@@ -207,6 +207,25 @@ struct MacMicrophoneInputTests {
         #expect(MacMicrophoneVoiceKeyMonitor.physicalEdge(type: .flagsChanged, event: release, mode: .function) == false)
     }
 
+    @Test func rightOptionCanTriggerMacMicrophoneIndependentlyFromRemoteFn() throws {
+        let press = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 61, keyDown: true))
+        press.flags = VoiceKeyMode.rightOption.eventFlags
+        press.setIntegerValueField(.keyboardEventKeycode, value: 61)
+        #expect(MacMicrophoneVoiceKeyMonitor.physicalEdge(
+            type: .flagsChanged, event: press, mode: .rightOption
+        ) == true)
+        #expect(MacMicrophoneVoiceKeyMonitor.physicalEdge(
+            type: .flagsChanged, event: press, mode: .function
+        ) == nil)
+
+        let release = try #require(CGEvent(keyboardEventSource: nil, virtualKey: 61, keyDown: false))
+        release.flags = []
+        release.setIntegerValueField(.keyboardEventKeycode, value: 61)
+        #expect(MacMicrophoneVoiceKeyMonitor.physicalEdge(
+            type: .flagsChanged, event: release, mode: .rightOption
+        ) == false)
+    }
+
     @Test(arguments: [44_100.0, 48_000.0])
     func converterPreservesSplitBufferOrderAndEndOfStreamTail(_ sampleRate: Double) throws {
         let format = try #require(AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2))
@@ -274,8 +293,12 @@ struct MacMicrophoneInputTests {
         let settings = AppSettings(defaults: defaults)
         #expect(settings.macMicrophoneInputUID.isEmpty)
         #expect(settings.macMicrophoneShortcut == nil)
+        #expect(settings.macMicrophoneVoiceKeyMode == .rightOption)
+        #expect(settings.macMicrophoneVoiceGesture == .toggle)
         let voiceMode = settings.voiceKeyMode
         settings.macMicrophoneInputUID = "test-physical-mic"
+        settings.macMicrophoneVoiceKeyMode = .leftOption
+        settings.macMicrophoneVoiceGesture = .hold
         settings.macMicrophoneShortcut = .init(keyCode: 0, modifierFlags: [.control, .option], keyLabel: "A")
         let payload = try settings.exportedConfigurationData()
         settings.macMicrophoneInputUID = ""
@@ -287,6 +310,8 @@ struct MacMicrophoneInputTests {
         let restored = AppSettings(defaults: defaults)
         #expect(restored.macMicrophoneShortcut == settings.macMicrophoneShortcut)
         #expect(restored.macMicrophoneInputUID == settings.macMicrophoneInputUID)
+        #expect(restored.macMicrophoneVoiceKeyMode == .leftOption)
+        #expect(restored.macMicrophoneVoiceGesture == .hold)
     }
 
     @Test func defaultInputUsesSystemDefaultPhysicalDeviceAndFallsBackToBuiltIn() {

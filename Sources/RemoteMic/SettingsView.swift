@@ -2036,10 +2036,27 @@ struct SettingsView: View {
             HStack(spacing: 14) {
                 Text("audio.mac_microphone.voice_key").font(.system(size: 12))
                     .frame(width: 92, alignment: .leading)
-                Text(LocalizedStringKey(settings.voiceKeyMode.localizationKey)).font(.system(size: 12))
-                Text(model.macMicrophoneVoiceGesture == .hold
-                    ? "audio.mac_microphone.voice_hold" : "audio.mac_microphone.voice_toggle")
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                Picker("audio.mac_microphone.voice_key", selection: Binding(
+                    get: { settings.macMicrophoneVoiceKeyMode },
+                    set: { settings.macMicrophoneVoiceKeyMode = $0 }
+                )) {
+                    ForEach(VoiceKeyMode.allCases) { mode in
+                        Text(LocalizedStringKey(mode.localizationKey)).tag(mode)
+                    }
+                }
+                .labelsHidden()
+                .fixedSize()
+                .disabled(model.macMicrophoneEnabled)
+                Picker("audio.mac_microphone.voice_gesture", selection: Binding(
+                    get: { settings.macMicrophoneVoiceGesture },
+                    set: { settings.macMicrophoneVoiceGesture = $0 }
+                )) {
+                    Text("audio.mac_microphone.voice_hold").tag(VoiceGestureMode.hold)
+                    Text("audio.mac_microphone.voice_toggle").tag(VoiceGestureMode.toggle)
+                }
+                .labelsHidden()
+                .fixedSize()
+                .disabled(model.macMicrophoneEnabled)
             }
         }
     }

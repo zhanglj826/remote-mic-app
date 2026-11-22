@@ -1493,7 +1493,8 @@
 "button_mapping.hold_profile_unavailable" = "此组件版本不能保存键位方案的按住效果。请更新组件。";
 "button_mapping.hold.profile_repeat_only" = "键位方案只保存重复执行模式；方向键按住请在默认方案设置。";
 "audio.mac_microphone.armed" = "待命";
-"audio.mac_microphone.voice_key" = "语音快捷键";
+"audio.mac_microphone.voice_key" = "键盘/鼠标触发键";
+"audio.mac_microphone.voice_gesture" = "键盘/鼠标触发方式";
 "audio.mac_microphone.voice_hold" = "按住说话，松开结束";
 "audio.mac_microphone.voice_toggle" = "按一下开始，再按一下结束";
 "audio.mac_microphone.error.input_monitoring" = "无法监听语音快捷键。请在系统设置中允许输入监控后重试。";
