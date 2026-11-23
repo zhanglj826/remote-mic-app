@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 
@@ -29,13 +30,17 @@ final class MacMicrophoneVoiceKeyMonitor {
     private var port: CFMachPort?
     private var source: CFRunLoopSource?
     private var tapLevel: TapLevel?
+    private var globalMonitor: Any?
+    private var localMonitor: Any?
+    private var watchdogTimer: Timer?
     private var generation: UInt64 = 0
     private var mode: VoiceKeyMode = .function
+    private var lastDispatchedEdge: (pressed: Bool, uptime: TimeInterval)?
 
     @discardableResult
     func start(mode: VoiceKeyMode) -> Bool {
         lock.lock()
-        let alreadyListening = port != nil && self.mode == mode
+        let alreadyListening = (port != nil || globalMonitor != nil) && self.mode == mode
         lock.unlock()
         if alreadyListening { return true }
         stop()
@@ -47,22 +52,128 @@ final class MacMicrophoneVoiceKeyMonitor {
         self.mode = mode
         lock.unlock()
 
-        // A voice tool such as Doubao may consume Fn in an earlier session tap.
-        // Try the HID-level listen-only tap first so the physical edge remains
-        // observable; fall back to the session-level head tap when unavailable.
+        // 1. 底层 HID / Session CGEventTap
+        var tapInstalled = false
         if let installed = installTap(level: .hid, mode: mode) {
             store(installed, level: .hid, mode: mode)
-            return true
+            tapInstalled = true
+        } else {
+            AppLogger.shared.write(
+                "MAC MICROPHONE KEY_MONITOR phase=fallback result=session_head reason=hid_unavailable"
+            )
+            if let installed = installTap(level: .session, mode: mode) {
+                store(installed, level: .session, mode: mode)
+                tapInstalled = true
+            }
         }
-        AppLogger.shared.write(
-            "MAC MICROPHONE KEY_MONITOR phase=fallback result=session_head reason=hid_unavailable"
-        )
-        if let installed = installTap(level: .session, mode: mode) {
-            store(installed, level: .session, mode: mode)
-            return true
+
+        // 2. 高层 AppKit NSEvent 监视器（全局+本地，不被 WindowServer 超时挂起，永不失活）
+        installAppKitMonitors(mode: mode)
+
+        // 3. 启动看门狗定时器，每 3 秒检测底层 tap 状态
+        startWatchdog()
+
+        if !tapInstalled && globalMonitor == nil {
+            AppLogger.shared.write("MAC MICROPHONE KEY_MONITOR phase=failed reason=all_monitors_unavailable")
+            return false
         }
-        AppLogger.shared.write("MAC MICROPHONE KEY_MONITOR phase=failed reason=tap_unavailable")
-        return false
+        return true
+    }
+
+    private func installAppKitMonitors(mode: VoiceKeyMode) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            if let monitor = self.globalMonitor {
+                NSEvent.removeMonitor(monitor)
+                self.globalMonitor = nil
+            }
+            if let monitor = self.localMonitor {
+                NSEvent.removeMonitor(monitor)
+                self.localMonitor = nil
+            }
+            let currentGen = self.generation
+            self.globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+                guard let self else { return }
+                self.handleNSEvent(event, generation: currentGen, source: "nsevent_global")
+            }
+            self.localMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+                guard let self else { return event }
+                self.handleNSEvent(event, generation: currentGen, source: "nsevent_local")
+                return event
+            }
+            self.lock.unlock()
+            AppLogger.shared.write("MAC MICROPHONE KEY_MONITOR phase=appkit_monitors_started voice_key=\(mode.rawValue)")
+        }
+    }
+
+    private func handleNSEvent(_ event: NSEvent, generation: UInt64, source: String) {
+        lock.lock()
+        guard generation == self.generation else {
+            lock.unlock()
+            return
+        }
+        let mode = self.mode
+        lock.unlock()
+
+        guard event.keyCode == mode.keyCode else { return }
+        let pressed: Bool
+        switch mode {
+        case .function:
+            pressed = event.modifierFlags.contains(.function)
+        case .leftCommand, .rightCommand:
+            pressed = event.modifierFlags.contains(.command)
+        case .leftOption, .rightOption:
+            pressed = event.modifierFlags.contains(.option)
+        }
+
+        let now = ProcessInfo.processInfo.systemUptime
+        dispatchEdgeSafely(pressed: pressed, observedAt: now, generation: generation, source: source)
+    }
+
+    private func dispatchEdgeSafely(pressed: Bool, observedAt: TimeInterval, generation: UInt64, source: String) {
+        lock.lock()
+        guard generation == self.generation else {
+            lock.unlock()
+            return
+        }
+        // 50ms 去重，防止 CGEventTap 和 NSEventGlobalMonitor 同时派发相同边沿
+        if let last = lastDispatchedEdge, last.pressed == pressed, abs(observedAt - last.uptime) < 0.05 {
+            lock.unlock()
+            return
+        }
+        lastDispatchedEdge = (pressed, observedAt)
+        lock.unlock()
+
+        AppLogger.shared.write("MAC MICROPHONE KEY_MONITOR phase=edge_observed source=\(source) pressed=\(pressed)")
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let valid = self.generation == generation
+            self.lock.unlock()
+            if valid {
+                self.onEdge(pressed, observedAt)
+            }
+        }
+    }
+
+    private func startWatchdog() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.watchdogTimer?.invalidate()
+            self.watchdogTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                self.lock.lock()
+                let port = self.port
+                let mode = self.mode
+                self.lock.unlock()
+                guard let port else { return }
+                if !CGEvent.tapIsEnabled(tap: port) {
+                    AppLogger.shared.write("MAC MICROPHONE KEY_MONITOR phase=watchdog result=re-enabling_tap voice_key=\(mode.rawValue)")
+                    CGEvent.tapEnable(tap: port, enable: true)
+                }
+            }
+        }
     }
 
     private func installTap(
@@ -120,13 +231,30 @@ final class MacMicrophoneVoiceKeyMonitor {
         let port = self.port
         let source = self.source
         let tapLevel = self.tapLevel?.rawValue ?? "unknown"
+        let globalMonitor = self.globalMonitor
+        let localMonitor = self.localMonitor
         self.port = nil
         self.source = nil
         self.tapLevel = nil
+        self.globalMonitor = nil
+        self.localMonitor = nil
+        self.lastDispatchedEdge = nil
         generation &+= 1
         lock.unlock()
+
+        DispatchQueue.main.async { [weak self] in
+            self?.watchdogTimer?.invalidate()
+            self?.watchdogTimer = nil
+            if let globalMonitor {
+                NSEvent.removeMonitor(globalMonitor)
+            }
+            if let localMonitor {
+                NSEvent.removeMonitor(localMonitor)
+            }
+        }
+
         if port != nil || source != nil { EventTapPort.release(port: port, source: source) }
-        if port != nil {
+        if port != nil || globalMonitor != nil || localMonitor != nil {
             AppLogger.shared.write("MAC MICROPHONE KEY_MONITOR phase=completed result=stopped tap=\(tapLevel)")
         }
     }
@@ -161,10 +289,7 @@ final class MacMicrophoneVoiceKeyMonitor {
         }
         guard port != nil, let pressed = Self.physicalEdge(type: type, event: event, mode: mode) else { return }
         let observedAt = ProcessInfo.processInfo.systemUptime
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.generation == generation else { return }
-            self.onEdge(pressed, observedAt)
-        }
+        dispatchEdgeSafely(pressed: pressed, observedAt: observedAt, generation: generation, source: "cgevent_tap")
     }
 
     static func physicalEdge(type: CGEventType, event: CGEvent, mode: VoiceKeyMode) -> Bool? {
