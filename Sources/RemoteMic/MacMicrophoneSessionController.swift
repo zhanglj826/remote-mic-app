@@ -205,14 +205,23 @@ final class MacMicrophoneSessionController {
         log("MAC MICROPHONE operation_id=\(operationID) phase=first_effective_pcm trigger_down_to_first_pcm_ms=\(elapsed) target_response=unknown")
     }
 
+    private static func isPermanentFailure(_ failure: MacMicrophoneFailure) -> Bool {
+        switch failure {
+        case .permission, .accessibility, .inputMonitoring, .inputUnavailable, .outputUnavailable:
+            return true
+        case .busy, .targetUnavailable, .capture, .noAudio, .interrupted, .timedOut:
+            return false
+        }
+    }
+
     func stop(failure: MacMicrophoneFailure? = nil) {
-        let isTransientFailure = failure == .interrupted || failure == .busy
-        if failure != nil, !isTransientFailure {
+        let isPermanent = failure.map(Self.isPermanentFailure) ?? false
+        if isPermanent {
             isEnabled = false
             captureRequested = false
         }
         if state == .armed, let failure {
-            if isTransientFailure {
+            if !isPermanent {
                 captureRequested = false
                 voiceKeyPressed = false
                 finish()
@@ -244,8 +253,8 @@ final class MacMicrophoneSessionController {
                 guard let self, self.operationID == operation, self.state == .stopping else { return }
                 self.finish()
                 let failure = self.terminalFailure ?? (normal ? nil : .interrupted)
-                let isTransient = failure == .interrupted || failure == .busy
-                if failure != nil, !isTransient {
+                let isPermanent = failure.map(Self.isPermanentFailure) ?? false
+                if isPermanent {
                     self.isEnabled = false
                     self.captureRequested = false
                     self.state = .failed(failure!)

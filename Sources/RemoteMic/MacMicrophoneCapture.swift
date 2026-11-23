@@ -322,7 +322,7 @@ final class MacMicrophoneCapture {
             DispatchQueue.main.async { self.fail?(.noAudio) }
         }
         firstPCMWatchdog = watchdog
-        queue.asyncAfter(deadline: .now() + 2, execute: watchdog)
+        queue.asyncAfter(deadline: .now() + 5, execute: watchdog)
     }
 
     private func acceptPCM(_ samples: [Int16]) {
