@@ -135,6 +135,21 @@ struct MacMicrophoneInputTests {
         #expect(h.logs.last?.contains("completion=forced") == true)
     }
 
+    @Test func noAudioFailureReleasesCaptureButKeepsVoiceKeyArmedForRetry() {
+        let h = MacMicrophoneHarness(); h.arm(); h.beginVoice()
+        h.controller.stop(failure: .noAudio)
+        h.stopCompletion?(); h.drainCompletion?(true)
+        #expect(h.controller.state == .armed)
+        #expect(h.controller.isEnabled)
+        #expect(h.logs.last?.contains("reason=no_audio") == true)
+        #expect(h.logs.last?.contains("recovery=rearmed") == true)
+
+        h.controller.handleVoiceKey(pressed: false, gesture: .toggle)
+        h.controller.handleVoiceKey(pressed: true, gesture: .toggle)
+        #expect(h.controller.state == .preparing)
+        #expect(h.events.filter { $0 == "start" }.count == 1)
+    }
+
     @Test func rapidNextKeyWaitsForDrainAndCanBeCancelled() {
         let h = MacMicrophoneHarness(); h.arm(); h.beginVoice()
         h.controller.handleVoiceKey(pressed: false, gesture: .hold)

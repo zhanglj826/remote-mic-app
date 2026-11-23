@@ -209,7 +209,11 @@ final class MacMicrophoneSessionController {
     }
 
     func stop(failure: MacMicrophoneFailure? = nil) {
-        if failure != nil { isEnabled = false; captureRequested = false }
+        let preservesSelection = failure == .noAudio
+        if failure != nil {
+            if !preservesSelection { isEnabled = false }
+            captureRequested = false
+        }
         if state == .armed, let failure {
             state = .failed(failure)
             finish()
@@ -238,10 +242,16 @@ final class MacMicrophoneSessionController {
                 guard let self, self.operationID == operation, self.state == .stopping else { return }
                 self.finish()
                 let failure = self.terminalFailure ?? (normal ? nil : .interrupted)
-                if failure != nil { self.isEnabled = false; self.captureRequested = false }
-                self.state = failure.map(MacMicrophoneSessionState.failed) ?? (self.isEnabled ? .armed : .idle)
+                if failure != nil {
+                    if failure != .noAudio { self.isEnabled = false }
+                    self.captureRequested = false
+                }
+                self.state = failure == .noAudio
+                    ? .armed
+                    : failure.map(MacMicrophoneSessionState.failed) ?? (self.isEnabled ? .armed : .idle)
                 let elapsed = Int((ProcessInfo.processInfo.systemUptime - self.startedAt) * 1_000)
-                self.log("MAC MICROPHONE operation_id=\(operation) phase=completed result=\(failure == nil ? "stopped" : "failed") completion=\(normal && failure == nil ? "normal" : "forced") reason=\(failure?.rawValue ?? "user_stop") elapsed_ms=\(elapsed) target_response=unknown")
+                let recovery = failure == .noAudio ? " recovery=rearmed" : ""
+                self.log("MAC MICROPHONE operation_id=\(operation) phase=completed result=\(failure == nil ? "stopped" : "failed") completion=\(normal && failure == nil ? "normal" : "forced") reason=\(failure?.rawValue ?? "user_stop") elapsed_ms=\(elapsed) target_response=unknown\(recovery)")
                 if self.rearmAfterSystemResume, self.systemResumeReceived {
                     self.rearmAfterSystemInterruption()
                     return
