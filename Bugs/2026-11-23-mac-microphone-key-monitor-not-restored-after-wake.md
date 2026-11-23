@@ -30,6 +30,7 @@
 - event tap 收到系统禁用通知后延迟尝试恢复，并在待命期间每 2 秒检查一次；只重新启用原 tap，不在回调内销毁重建。持续禁用时日志最多每 30 秒记录一次，恢复时记录一次 `result=restored`。
 - Build 178 再次复现时，event tap 持续报告启用，但 operation 11 从 14:43:43 起不再收到停止边沿，Mac 麦克风持续产生 PCM。这确认仅检查 tap 启用状态仍不充分。修复增加 20ms HID 系统按键状态兜底，并与 event tap 边沿去重；兜底命中记录 `source=key_state_poll`。短按切换会话另设 5 分钟强制安全停止，避免任何监听故障造成无限采集。
 - Build 179 的现场日志确认第三条直接失败路径：`operation_id=20` 正常收到右 Option 并启动所选设备，但 2 秒内没有 PCM；`no_audio` 处理把 `isEnabled` 清零，随后立即记录 `KEY_MONITOR phase=completed result=stopped`。遥控器仍正常，而键盘和鼠标只能通过停用再启用恢复。修复后 `no_audio` 只释放本次采集，保留用户选择和物理语音键监听，回到 `armed` 并记录 `recovery=rearmed`；权限或设备不可用等错误仍沿用原有失败行为。
+- Build 180 保持故障现场时，用户真实按下键盘右 Option，主 tap 和 20ms HID 状态轮询均没有产生任何边沿，而同进程内遥控器音频、Mac 麦克风混音和虚拟输出仍正常。这证明单个 HID tap 加状态轮询仍不足。修复改为同时安装 HID 层和 Session 层两个独立只读 tap，三路边沿统一去重，任一 tap 静默失去投递时由另一路继续接收键盘和鼠标映射事件。
 
 ## 验证
 

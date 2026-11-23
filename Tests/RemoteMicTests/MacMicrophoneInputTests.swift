@@ -279,7 +279,7 @@ struct MacMicrophoneInputTests {
         #expect(h.events.isEmpty)
     }
 
-    @Test func voiceKeyMonitorRetriesTheExistingDisabledTapWithoutRebuilding() throws {
+    @Test func voiceKeyMonitorUsesIndependentHIDAndSessionTapsWithoutRebuilding() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
         let source = try String(
@@ -289,7 +289,8 @@ struct MacMicrophoneInputTests {
         #expect(source.contains("repeating: 0.02"))
         #expect(source.contains("CGEventSource.keyState(.hidSystemState"))
         #expect(source.contains("phase=edge_recovered source=key_state_poll"))
-        #expect(source.contains("CGEvent.tapEnable(tap: port, enable: true)"))
+        #expect(source.contains("[TapLevel.hid, .session].compactMap"))
+        #expect(source.contains("disabled.forEach { CGEvent.tapEnable"))
         #expect(source.contains("result=\\(restored ? \"restored\" : \"still_disabled\")"))
         #expect(source.contains("rebuild=false"))
         #expect(!source.contains("recoverIfCurrent("))
