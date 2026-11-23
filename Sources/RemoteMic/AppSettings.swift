@@ -42,6 +42,8 @@ private struct PersonalizedConfiguration: Codable {
     let selectedAudioDeviceUID: String
     let macMicrophoneInputUID: String?
     let macMicrophoneShortcut: CustomKeyboardShortcut?
+    let macMicrophoneVoiceKeyMode: VoiceKeyMode?
+    let macMicrophoneVoiceGestureMode: VoiceGestureMode?
     let customMappingEnabled: Bool
     let buttonBindings: [String: ButtonAction]
     let buttonShortcuts: [String: CustomKeyboardShortcut]
@@ -447,6 +449,18 @@ final class AppSettings: ObservableObject {
         didSet {
             defaults.set(macMicrophoneShortcut.flatMap { try? JSONEncoder().encode($0) },
                 forKey: "macMicrophoneShortcut")
+        }
+    }
+
+    @Published var macMicrophoneVoiceKeyMode: VoiceKeyMode? {
+        didSet {
+            defaults.set(macMicrophoneVoiceKeyMode?.rawValue, forKey: "macMicrophoneVoiceKeyMode")
+        }
+    }
+
+    @Published var macMicrophoneVoiceGestureMode: VoiceGestureMode? {
+        didSet {
+            defaults.set(macMicrophoneVoiceGestureMode?.rawValue, forKey: "macMicrophoneVoiceGestureMode")
         }
     }
 
@@ -1045,6 +1059,10 @@ final class AppSettings: ObservableObject {
         macMicrophoneInputUID = defaults.string(forKey: "macMicrophoneInputUID") ?? ""
         macMicrophoneShortcut = Self.decodeSetting(CustomKeyboardShortcut.self,
             forKey: "macMicrophoneShortcut", from: defaults, corrupted: &corruptedKeys)
+        macMicrophoneVoiceKeyMode = defaults.string(forKey: "macMicrophoneVoiceKeyMode")
+            .flatMap(VoiceKeyMode.init(rawValue:))
+        macMicrophoneVoiceGestureMode = defaults.string(forKey: "macMicrophoneVoiceGestureMode")
+            .flatMap(VoiceGestureMode.init(rawValue:))
         selectedAudioDeviceUID = persistedAudioDeviceUID
         lastKnownAudioDeviceUID = defaults.string(forKey: Keys.lastKnownAudioDeviceUID) ?? persistedAudioDeviceUID
         if defaults.string(forKey: Keys.lastKnownAudioDeviceUID) == nil,
@@ -3243,6 +3261,8 @@ final class AppSettings: ObservableObject {
             selectedAudioDeviceUID: selectedAudioDeviceUID,
             macMicrophoneInputUID: macMicrophoneInputUID,
             macMicrophoneShortcut: macMicrophoneShortcut,
+            macMicrophoneVoiceKeyMode: macMicrophoneVoiceKeyMode,
+            macMicrophoneVoiceGestureMode: macMicrophoneVoiceGestureMode,
             customMappingEnabled: customMappingEnabled,
             buttonBindings: Dictionary(
                 uniqueKeysWithValues: buttonBindings.map { ($0.key.rawValue, $0.value) }
@@ -3488,6 +3508,8 @@ final class AppSettings: ObservableObject {
         if selectedAudioDeviceUID != c.selectedAudioDeviceUID { selectedAudioDeviceUID = c.selectedAudioDeviceUID }
         macMicrophoneInputUID = c.macMicrophoneInputUID ?? ""
         macMicrophoneShortcut = c.macMicrophoneShortcut.flatMap { $0.isMacMicrophoneCombination ? Self.validatedShortcut($0) : nil }
+        macMicrophoneVoiceKeyMode = c.macMicrophoneVoiceKeyMode
+        macMicrophoneVoiceGestureMode = c.macMicrophoneVoiceGestureMode
         if customMappingEnabled != c.customMappingEnabled { customMappingEnabled = c.customMappingEnabled }
         unifiedBaseBindings = c.unifiedBaseBindings ?? []
         buttonBindings = Dictionary(uniqueKeysWithValues: c.buttonBindings.compactMap { key,value in RemoteButton(rawValue: key).map { ($0,value) } })
@@ -3686,6 +3708,8 @@ final class AppSettings: ObservableObject {
         macMicrophoneShortcut = configuration.macMicrophoneShortcut.flatMap {
             $0.isMacMicrophoneCombination ? Self.validatedShortcut($0) : nil
         }
+        macMicrophoneVoiceKeyMode = configuration.macMicrophoneVoiceKeyMode
+        macMicrophoneVoiceGestureMode = configuration.macMicrophoneVoiceGestureMode
         customMappingEnabled = configuration.customMappingEnabled
         buttonBindings = Self.defaultBindings.merging(importedBindings) { _, imported in imported }
         buttonShortcuts = importedShortcuts

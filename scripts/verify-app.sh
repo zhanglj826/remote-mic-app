@@ -437,7 +437,11 @@ if [[ "$REQUIRE_SAYALL_COMBINATION_ACTIONS" == "1" && \
   exit 1
 fi
 SAYALL_PRIVATE_ARTIFACT_INCLUDED="$(plutil -extract SayAllPrivateArtifactsIncluded raw -o - "$PLIST" 2>/dev/null || true)"
-SAYALL_PRIVATE_PLATFORM_VERSION="$(plutil -extract SayAllPrivatePlatformVersion raw -o - "$PLIST" 2>/dev/null || true)"
+if plutil -extract SayAllPrivatePlatformVersion raw "$PLIST" >/dev/null 2>&1; then
+  SAYALL_PRIVATE_PLATFORM_VERSION="$(plutil -extract SayAllPrivatePlatformVersion raw -o - "$PLIST" 2>/dev/null)"
+else
+  SAYALL_PRIVATE_PLATFORM_VERSION=""
+fi
 if [[ -n "$SAYALL_PRIVATE_PLATFORM_VERSION" ]] && \
    [[ ! "$SAYALL_PRIVATE_PLATFORM_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   print -u2 "App declares an invalid SayAllPrivatePlatformVersion: $SAYALL_PRIVATE_PLATFORM_VERSION"

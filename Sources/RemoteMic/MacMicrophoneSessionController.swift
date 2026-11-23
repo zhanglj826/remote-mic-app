@@ -122,15 +122,20 @@ final class MacMicrophoneSessionController {
 
     func handleVoiceKey(pressed: Bool, gesture: VoiceGestureMode,
                         observedAt: TimeInterval = ProcessInfo.processInfo.systemUptime) {
-        guard isEnabled, pressed != voiceKeyPressed else { return }
-        voiceKeyPressed = pressed
-        log("MAC MICROPHONE operation_id=\(operationID) phase=voice_key edge=\(pressed ? "down" : "up") gesture=\(gesture.rawValue) target_response=unknown")
-        if gesture == .hold {
-            captureRequested = pressed
-        } else {
-            guard pressed else { return }
+        if gesture == .toggle {
+            guard isEnabled else { return }
+            guard pressed else {
+                voiceKeyPressed = false
+                return
+            }
+            voiceKeyPressed = true
             captureRequested.toggle()
+        } else {
+            guard isEnabled, pressed != voiceKeyPressed else { return }
+            voiceKeyPressed = pressed
+            captureRequested = pressed
         }
+        log("MAC MICROPHONE operation_id=\(operationID) phase=voice_key edge=\(pressed ? "down" : "up") gesture=\(gesture.rawValue) target_response=unknown")
         if captureRequested, pressed { requestedTriggerDownAt = observedAt }
         if preparingSelection { return }
         if captureRequested {
@@ -143,6 +148,12 @@ final class MacMicrophoneSessionController {
 
     private func beginPreparation(entry: String, selectionOnly: Bool) {
         guard !isBusy() else {
+            if !selectionOnly {
+                captureRequested = false
+                state = .armed
+                log("MAC MICROPHONE phase=rejected reason=busy entry=\(entry) result=retained_armed")
+                return
+            }
             isEnabled = false
             captureRequested = false
             state = .failed(.busy)
@@ -195,8 +206,19 @@ final class MacMicrophoneSessionController {
     }
 
     func stop(failure: MacMicrophoneFailure? = nil) {
-        if failure != nil { isEnabled = false; captureRequested = false }
+        let isTransientFailure = failure == .interrupted || failure == .busy
+        if failure != nil, !isTransientFailure {
+            isEnabled = false
+            captureRequested = false
+        }
         if state == .armed, let failure {
+            if isTransientFailure {
+                captureRequested = false
+                voiceKeyPressed = false
+                finish()
+                log("MAC MICROPHONE operation_id=\(operationID) phase=rearmed reason=\(failure.rawValue) capture_running=false")
+                return
+            }
             state = .failed(failure)
             finish()
             log("MAC MICROPHONE operation_id=\(operationID) phase=completed result=failed reason=\(failure.rawValue) capture_running=false")
@@ -222,8 +244,16 @@ final class MacMicrophoneSessionController {
                 guard let self, self.operationID == operation, self.state == .stopping else { return }
                 self.finish()
                 let failure = self.terminalFailure ?? (normal ? nil : .interrupted)
-                if failure != nil { self.isEnabled = false; self.captureRequested = false }
-                self.state = failure.map(MacMicrophoneSessionState.failed) ?? (self.isEnabled ? .armed : .idle)
+                let isTransient = failure == .interrupted || failure == .busy
+                if failure != nil, !isTransient {
+                    self.isEnabled = false
+                    self.captureRequested = false
+                    self.state = .failed(failure!)
+                } else {
+                    self.captureRequested = false
+                    self.voiceKeyPressed = false
+                    self.state = self.isEnabled ? .armed : .idle
+                }
                 let elapsed = Int((ProcessInfo.processInfo.systemUptime - self.startedAt) * 1_000)
                 self.log("MAC MICROPHONE operation_id=\(operation) phase=completed result=\(failure == nil ? "stopped" : "failed") completion=\(normal && failure == nil ? "normal" : "forced") reason=\(failure?.rawValue ?? "user_stop") elapsed_ms=\(elapsed) target_response=unknown")
                 if self.isEnabled, self.captureRequested {

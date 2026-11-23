@@ -139,6 +139,7 @@ final class MacMicrophoneVoiceKeyMonitor {
         let tapLevel = self.tapLevel?.rawValue ?? "unknown"
         lock.unlock()
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            AppLogger.shared.write("MAC MICROPHONE KEY_MONITOR phase=reenable_requested type=\(type.rawValue) tap=\(tapLevel)")
             if let port { CGEvent.tapEnable(tap: port, enable: true) }
             return
         }
