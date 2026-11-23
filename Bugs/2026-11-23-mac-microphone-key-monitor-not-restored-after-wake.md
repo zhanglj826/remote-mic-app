@@ -31,10 +31,11 @@
 - Build 178 再次复现时，event tap 持续报告启用，但 operation 11 从 14:43:43 起不再收到停止边沿，Mac 麦克风持续产生 PCM。这确认仅检查 tap 启用状态仍不充分。修复增加 20ms HID 系统按键状态兜底，并与 event tap 边沿去重；兜底命中记录 `source=key_state_poll`。短按切换会话另设 5 分钟强制安全停止，避免任何监听故障造成无限采集。
 - Build 179 的现场日志确认第三条直接失败路径：`operation_id=20` 正常收到右 Option 并启动所选设备，但 2 秒内没有 PCM；`no_audio` 处理把 `isEnabled` 清零，随后立即记录 `KEY_MONITOR phase=completed result=stopped`。遥控器仍正常，而键盘和鼠标只能通过停用再启用恢复。修复后 `no_audio` 只释放本次采集，保留用户选择和物理语音键监听，回到 `armed` 并记录 `recovery=rearmed`；权限或设备不可用等错误仍沿用原有失败行为。
 - Build 180 保持故障现场时，用户真实按下键盘右 Option，主 tap 和 20ms HID 状态轮询均没有产生任何边沿，而同进程内遥控器音频、Mac 麦克风混音和虚拟输出仍正常。这证明单个 HID tap 加状态轮询仍不足。修复改为同时安装 HID 层和 Session 层两个独立只读 tap，三路边沿统一去重，任一 tap 静默失去投递时由另一路继续接收键盘和鼠标映射事件。
+- Build 181 再次复现时，HID 与 Session 两个 tap 都仍报告启用，但安全输入环境下右 Option 同时停止投递，系统键状态查询也无边沿；遥控器与音频链路继续正常。由此确认依赖全局观察豆包快捷键的方案在 macOS 安全输入下不可可靠实现。最终修复移除 Mac 麦克风主路径对右 Option 的依赖：启用后持续采集并送入虚拟输出，键盘和鼠标只触发豆包，遥控器音频按会话混入同一出口。
 
 ## 验证
 
-- `swift test --disable-keychain --filter MacMicrophoneInputTests`：无 PCM 自动重新待命修复完成后 31 项通过。
+- `swift test --disable-keychain --filter MacMicrophoneInputTests`：持续混音及休眠恢复状态机完成后 33 项通过。
 - 新增覆盖：待命状态挂起/唤醒后重新待命且不自动采集；录音中快速挂起/唤醒时等待排空再恢复；原本关闭时唤醒不自动开启。
 - `git diff --check`：通过。
 

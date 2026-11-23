@@ -57,6 +57,7 @@ final class MacMicrophoneSessionController {
     private let stopCapture: (@escaping () -> Void) -> Void
     private let drain: (@escaping (Bool) -> Void) -> Void
     private let finish: () -> Void
+    private let continuousCapture: Bool
     private let schedule: (TimeInterval, @escaping () -> Void) -> VoiceFnTapScheduledTask
     private let log: (String) -> Void
     var onStateChange: (MacMicrophoneSessionState) -> Void = { _ in }
@@ -87,6 +88,7 @@ final class MacMicrophoneSessionController {
         stopCapture: @escaping (@escaping () -> Void) -> Void,
         drain: @escaping (@escaping (Bool) -> Void) -> Void,
         finish: @escaping () -> Void,
+        continuousCapture: Bool = false,
         schedule: @escaping (TimeInterval, @escaping () -> Void) -> VoiceFnTapScheduledTask = VoiceFnTapScheduledTask.mainQueue,
         log: @escaping (String) -> Void = AppLogger.shared.write
     ) {
@@ -96,6 +98,7 @@ final class MacMicrophoneSessionController {
         self.stopCapture = stopCapture
         self.drain = drain
         self.finish = finish
+        self.continuousCapture = continuousCapture
         self.schedule = schedule
         self.log = log
     }
@@ -120,13 +123,14 @@ final class MacMicrophoneSessionController {
         } else {
             isEnabled = true
             voiceKeyPressed = false
-            captureRequested = false
-            beginPreparation(entry: entry.rawValue, selectionOnly: true)
+            captureRequested = continuousCapture
+            beginPreparation(entry: entry.rawValue, selectionOnly: !continuousCapture)
         }
     }
 
     func handleVoiceKey(pressed: Bool, gesture: VoiceGestureMode,
                         observedAt: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        guard !continuousCapture else { return }
         guard isEnabled, pressed != voiceKeyPressed else { return }
         voiceKeyPressed = pressed
         log("MAC MICROPHONE operation_id=\(operationID) phase=voice_key edge=\(pressed ? "down" : "up") gesture=\(gesture.rawValue) target_response=unknown")
@@ -290,9 +294,9 @@ final class MacMicrophoneSessionController {
         systemResumeReceived = false
         isEnabled = true
         voiceKeyPressed = false
-        captureRequested = false
+        captureRequested = continuousCapture
         log("MAC MICROPHONE operation_id=\(operationID) phase=resuming result=pending source=system_lifecycle")
-        beginPreparation(entry: "system_resume", selectionOnly: true)
+        beginPreparation(entry: "system_resume", selectionOnly: !continuousCapture)
     }
 
     /// Process termination is a forced cancellation; normal user stop always drains.

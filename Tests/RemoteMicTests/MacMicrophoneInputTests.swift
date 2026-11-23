@@ -12,6 +12,32 @@ struct MacMicrophoneInputTests {
         h.prepareCompletion?(nil)
         #expect(!h.events.contains("start"))
     }
+
+    @Test func continuousModeStartsCaptureWhenEnabledAndIgnoresVoiceKeys() {
+        let h = MacMicrophoneHarness(continuousCapture: true)
+        h.controller.toggle(from: .connectionPage)
+        #expect(h.controller.state == .preparing)
+        h.prepareCompletion?(nil); h.startCompletion?(nil)
+        #expect(h.controller.state == .recording)
+        #expect(h.events.filter { $0 == "start" }.count == 1)
+        h.controller.handleVoiceKey(pressed: true, gesture: .toggle)
+        h.controller.handleVoiceKey(pressed: false, gesture: .toggle)
+        #expect(h.controller.state == .recording)
+        #expect(h.events.filter { $0 == "start" }.count == 1)
+    }
+
+    @Test func continuousModeRestartsCaptureAfterSystemResume() {
+        let h = MacMicrophoneHarness(continuousCapture: true)
+        h.controller.toggle(from: .connectionPage)
+        h.prepareCompletion?(nil); h.startCompletion?(nil)
+        h.controller.suspendForSystemLifecycle()
+        h.controller.resumeAfterSystemLifecycle()
+        h.stopCompletion?(); h.drainCompletion?(false)
+        #expect(h.controller.state == .preparing)
+        h.prepareCompletion?(nil); h.startCompletion?(nil)
+        #expect(h.controller.state == .recording)
+        #expect(h.events.filter { $0 == "start" }.count == 2)
+    }
     @Test(arguments: [MacMicrophoneEntry.connectionPage, .statusMenu, .shortcut])
     func allSourceEntriesArmWithoutCapture(_ entry: MacMicrophoneEntry) {
         let h = MacMicrophoneHarness()
@@ -538,6 +564,7 @@ struct MacMicrophoneInputTests {
 }
 
 private final class MacMicrophoneHarness {
+    let continuousCapture: Bool
     var busy = false
     var events: [String] = []
     var logs: [String] = []
@@ -547,6 +574,9 @@ private final class MacMicrophoneHarness {
     var drainCompletion: ((Bool) -> Void)?
     var timeout: (() -> Void)?
     var recordingTimeout: (() -> Void)?
+    init(continuousCapture: Bool = false) {
+        self.continuousCapture = continuousCapture
+    }
     func arm() {
         controller.toggle(from: .connectionPage)
         prepareCompletion?(nil)
@@ -563,6 +593,7 @@ private final class MacMicrophoneHarness {
         stopCapture: { self.events.append("stop_capture"); self.stopCompletion = $0 },
         drain: { self.events.append("drain"); self.drainCompletion = $0 },
         finish: { self.events.append("finish") },
+        continuousCapture: continuousCapture,
         schedule: { delay, action in
             if delay >= 300 { self.recordingTimeout = action }
             else { self.timeout = action }
