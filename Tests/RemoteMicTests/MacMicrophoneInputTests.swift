@@ -226,6 +226,58 @@ struct MacMicrophoneInputTests {
         ) == false)
     }
 
+    @Test func systemSuspendThenResumeRearmsWithoutStartingCapture() {
+        let h = MacMicrophoneHarness(); h.arm()
+        h.controller.suspendForSystemLifecycle()
+        #expect(h.controller.state == .failed(.interrupted))
+        #expect(!h.controller.isEnabled)
+
+        h.controller.resumeAfterSystemLifecycle()
+        #expect(h.controller.state == .preparing)
+        h.prepareCompletion?(nil)
+        #expect(h.controller.state == .armed)
+        #expect(h.controller.isEnabled)
+        #expect(!h.events.contains("start"))
+        #expect(h.logs.contains { $0.contains("entry=system_resume") })
+    }
+
+    @Test func fastResumeWaitsForInterruptedCaptureToDrainThenRearms() {
+        let h = MacMicrophoneHarness(); h.arm(); h.beginVoice()
+        h.controller.suspendForSystemLifecycle()
+        h.controller.resumeAfterSystemLifecycle()
+        #expect(h.controller.state == .stopping)
+        #expect(h.logs.contains { $0.contains("phase=resume_deferred") })
+
+        h.stopCompletion?(); h.drainCompletion?(false)
+        #expect(h.controller.state == .preparing)
+        h.prepareCompletion?(nil)
+        #expect(h.controller.state == .armed)
+        #expect(h.events.filter { $0 == "start" }.count == 1)
+    }
+
+    @Test func systemResumeDoesNotEnableAnInputThatWasAlreadyOff() {
+        let h = MacMicrophoneHarness()
+        h.controller.suspendForSystemLifecycle()
+        h.controller.resumeAfterSystemLifecycle()
+        #expect(h.controller.state == .idle)
+        #expect(!h.controller.isEnabled)
+        #expect(h.events.isEmpty)
+    }
+
+    @Test func voiceKeyMonitorRetriesTheExistingDisabledTapWithoutRebuilding() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("Sources/RemoteMic/MacMicrophoneVoiceKeyMonitor.swift"),
+            encoding: .utf8
+        )
+        #expect(source.contains("timer.schedule(deadline: .now() + 2, repeating: 2)"))
+        #expect(source.contains("CGEvent.tapEnable(tap: port, enable: true)"))
+        #expect(source.contains("result=\\(restored ? \"restored\" : \"still_disabled\")"))
+        #expect(source.contains("rebuild=false"))
+        #expect(!source.contains("recoverIfCurrent("))
+    }
+
     @Test(arguments: [44_100.0, 48_000.0])
     func converterPreservesSplitBufferOrderAndEndOfStreamTail(_ sampleRate: Double) throws {
         let format = try #require(AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2))

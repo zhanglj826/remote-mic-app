@@ -28,9 +28,11 @@ final class MacMicrophoneVoiceKeyMonitor {
     private let lock = NSLock()
     private var port: CFMachPort?
     private var source: CFRunLoopSource?
+    private var healthTimer: DispatchSourceTimer?
     private var tapLevel: TapLevel?
     private var generation: UInt64 = 0
     private var mode: VoiceKeyMode = .function
+    private var lastDisabledLogAt: TimeInterval = 0
 
     @discardableResult
     func start(mode: VoiceKeyMode) -> Bool {
@@ -108,7 +110,14 @@ final class MacMicrophoneVoiceKeyMonitor {
         port = installed.port
         source = installed.source
         tapLevel = level
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + 2, repeating: 2)
+        timer.setEventHandler { [weak self] in
+            self?.restoreTapIfDisabled(reason: "watchdog")
+        }
+        healthTimer = timer
         lock.unlock()
+        timer.resume()
         AppLogger.shared.write(
             "MAC MICROPHONE KEY_MONITOR phase=started result=listening " +
                 "voice_key=\(mode.rawValue) event_passthrough=true tap=\(level.rawValue)"
@@ -119,12 +128,15 @@ final class MacMicrophoneVoiceKeyMonitor {
         lock.lock()
         let port = self.port
         let source = self.source
+        let healthTimer = self.healthTimer
         let tapLevel = self.tapLevel?.rawValue ?? "unknown"
         self.port = nil
         self.source = nil
+        self.healthTimer = nil
         self.tapLevel = nil
         generation &+= 1
         lock.unlock()
+        healthTimer?.cancel()
         if port != nil || source != nil { EventTapPort.release(port: port, source: source) }
         if port != nil {
             AppLogger.shared.write("MAC MICROPHONE KEY_MONITOR phase=completed result=stopped tap=\(tapLevel)")
@@ -139,7 +151,10 @@ final class MacMicrophoneVoiceKeyMonitor {
         let tapLevel = self.tapLevel?.rawValue ?? "unknown"
         lock.unlock()
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let port { CGEvent.tapEnable(tap: port, enable: true) }
+            let reason = type == .tapDisabledByTimeout ? "timeout" : "user_input"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.restoreTapIfDisabled(reason: reason)
+            }
             return
         }
         if let observation = FnKeyDiagnostics.eventObservation(
@@ -171,6 +186,34 @@ final class MacMicrophoneVoiceKeyMonitor {
               event.getIntegerValueField(.keyboardEventKeycode) == Int64(mode.keyCode),
               event.getIntegerValueField(.eventSourceUserData) != KeyboardInjector.syntheticEventMarker else { return nil }
         return event.flags.contains(mode.eventFlags)
+    }
+
+    /// Secure input and event-tap timeouts can leave a listen-only tap disabled even
+    /// after an immediate re-enable attempt. Keep the original tap and retry enabling
+    /// it after the protected input interval ends; rebuilding inside the callback can
+    /// cause a disable/rebuild loop.
+    private func restoreTapIfDisabled(reason: String) {
+        lock.lock()
+        guard let port else { lock.unlock(); return }
+        let generation = self.generation
+        let tapLevel = self.tapLevel?.rawValue ?? "unknown"
+        lock.unlock()
+        guard !CGEvent.tapIsEnabled(tap: port) else { return }
+
+        CGEvent.tapEnable(tap: port, enable: true)
+        let restored = CGEvent.tapIsEnabled(tap: port)
+        let now = ProcessInfo.processInfo.systemUptime
+        lock.lock()
+        let current = self.port === port && self.generation == generation
+        let shouldLog = restored || now - lastDisabledLogAt >= 30
+        if shouldLog { lastDisabledLogAt = now }
+        lock.unlock()
+        guard current, shouldLog else { return }
+        AppLogger.shared.write(
+            "MAC MICROPHONE KEY_MONITOR phase=recovery_attempt " +
+                "result=\(restored ? "restored" : "still_disabled") " +
+                "reason=\(reason) tap=\(tapLevel) rebuild=false"
+        )
     }
 
     deinit { stop() }

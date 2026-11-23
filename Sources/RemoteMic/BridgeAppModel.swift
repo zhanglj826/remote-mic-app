@@ -3374,7 +3374,7 @@ final class BridgeAppModel: NSObject, ObservableObject, XiaomiBluetoothBridgeDel
                 "test_tone=\(isPlayingTestTone) audio_ready=\(isAudioOutputReady)"
         )
         guard started, changed else { return }
-        if event.isSuspending { macMicrophoneSession.stop(failure: .interrupted) }
+        if event.isSuspending { macMicrophoneSession.suspendForSystemLifecycle() }
         setBluetoothSystemSuspended(
             systemAudioSuspensionState.isSuspended,
             reason: event.rawValue
@@ -3411,6 +3411,7 @@ final class BridgeAppModel: NSObject, ObservableObject, XiaomiBluetoothBridgeDel
             )
             return
         }
+        macMicrophoneSession.resumeAfterSystemLifecycle()
         resumeVirtualAudioOutputIfNeeded(reason: "system_\(event.rawValue)")
         if BluetoothWakeRecoveryPolicy.shouldForceReconnect(event: event, started: started) {
             recoverBluetoothVoiceLink(reason: "system_wake")

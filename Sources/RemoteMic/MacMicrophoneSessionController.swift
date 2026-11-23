@@ -74,6 +74,8 @@ final class MacMicrophoneSessionController {
     private var startedAt: TimeInterval = 0
     private var deadline: VoiceFnTapScheduledTask?
     private var terminalFailure: MacMicrophoneFailure?
+    private var rearmAfterSystemResume = false
+    private var systemResumeReceived = false
 
     init(
         isBusy: @escaping () -> Bool,
@@ -226,18 +228,57 @@ final class MacMicrophoneSessionController {
                 self.state = failure.map(MacMicrophoneSessionState.failed) ?? (self.isEnabled ? .armed : .idle)
                 let elapsed = Int((ProcessInfo.processInfo.systemUptime - self.startedAt) * 1_000)
                 self.log("MAC MICROPHONE operation_id=\(operation) phase=completed result=\(failure == nil ? "stopped" : "failed") completion=\(normal && failure == nil ? "normal" : "forced") reason=\(failure?.rawValue ?? "user_stop") elapsed_ms=\(elapsed) target_response=unknown")
+                if self.rearmAfterSystemResume, self.systemResumeReceived {
+                    self.rearmAfterSystemInterruption()
+                    return
+                }
                 if self.isEnabled, self.captureRequested {
                     self.beginPreparation(entry: "voice_key_after_drain", selectionOnly: false)
                 }
             }
         }
     }
+
+    /// A system suspension releases capture and the event tap, but preserves the user's
+    /// selected-input intent. Resuming only returns to the armed state; it never restarts
+    /// capture until the physical voice key is pressed again.
+    func suspendForSystemLifecycle() {
+        guard isEnabled else { return }
+        rearmAfterSystemResume = true
+        systemResumeReceived = false
+        log("MAC MICROPHONE operation_id=\(operationID) phase=suspended result=waiting_for_system_resume")
+        stop(failure: .interrupted)
+    }
+
+    func resumeAfterSystemLifecycle() {
+        guard rearmAfterSystemResume else { return }
+        systemResumeReceived = true
+        if state == .stopping {
+            log("MAC MICROPHONE operation_id=\(operationID) phase=resume_deferred reason=audio_drain_pending")
+            return
+        }
+        rearmAfterSystemInterruption()
+    }
+
+    private func rearmAfterSystemInterruption() {
+        guard rearmAfterSystemResume, systemResumeReceived else { return }
+        rearmAfterSystemResume = false
+        systemResumeReceived = false
+        isEnabled = true
+        voiceKeyPressed = false
+        captureRequested = false
+        log("MAC MICROPHONE operation_id=\(operationID) phase=resuming result=pending source=system_lifecycle")
+        beginPreparation(entry: "system_resume", selectionOnly: true)
+    }
+
     /// Process termination is a forced cancellation; normal user stop always drains.
     func shutdown() {
         guard state.isActive || state == .armed else { return }
         isEnabled = false
         voiceKeyPressed = false
         captureRequested = false
+        rearmAfterSystemResume = false
+        systemResumeReceived = false
         let operation = operationID
         operationID &+= 1
         deadline?.cancel()
