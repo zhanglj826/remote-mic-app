@@ -28,11 +28,13 @@ final class MacMicrophoneVoiceKeyMonitor {
     private let lock = NSLock()
     private var port: CFMachPort?
     private var source: CFRunLoopSource?
-    private var healthTimer: DispatchSourceTimer?
+    private var watchdogTimer: DispatchSourceTimer?
     private var tapLevel: TapLevel?
     private var generation: UInt64 = 0
     private var mode: VoiceKeyMode = .function
     private var lastDisabledLogAt: TimeInterval = 0
+    private var lastObservedPressed = false
+    private var nextTapHealthCheckAt: TimeInterval = 0
 
     @discardableResult
     func start(mode: VoiceKeyMode) -> Bool {
@@ -110,12 +112,14 @@ final class MacMicrophoneVoiceKeyMonitor {
         port = installed.port
         source = installed.source
         tapLevel = level
+        lastObservedPressed = Self.currentKeyState(mode: mode)
+        nextTapHealthCheckAt = ProcessInfo.processInfo.systemUptime + 2
         let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: .now() + 2, repeating: 2)
+        timer.schedule(deadline: .now() + 0.02, repeating: 0.02, leeway: .milliseconds(5))
         timer.setEventHandler { [weak self] in
-            self?.restoreTapIfDisabled(reason: "watchdog")
+            self?.pollKeyStateAndTapHealth()
         }
-        healthTimer = timer
+        watchdogTimer = timer
         lock.unlock()
         timer.resume()
         AppLogger.shared.write(
@@ -128,15 +132,16 @@ final class MacMicrophoneVoiceKeyMonitor {
         lock.lock()
         let port = self.port
         let source = self.source
-        let healthTimer = self.healthTimer
+        let watchdogTimer = self.watchdogTimer
         let tapLevel = self.tapLevel?.rawValue ?? "unknown"
         self.port = nil
         self.source = nil
-        self.healthTimer = nil
+        self.watchdogTimer = nil
         self.tapLevel = nil
+        self.lastObservedPressed = false
         generation &+= 1
         lock.unlock()
-        healthTimer?.cancel()
+        watchdogTimer?.cancel()
         if port != nil || source != nil { EventTapPort.release(port: port, source: source) }
         if port != nil {
             AppLogger.shared.write("MAC MICROPHONE KEY_MONITOR phase=completed result=stopped tap=\(tapLevel)")
@@ -174,11 +179,7 @@ final class MacMicrophoneVoiceKeyMonitor {
             AppLogger.shared.write(observation)
         }
         guard port != nil, let pressed = Self.physicalEdge(type: type, event: event, mode: mode) else { return }
-        let observedAt = ProcessInfo.processInfo.systemUptime
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.generation == generation else { return }
-            self.onEdge(pressed, observedAt)
-        }
+        deliverEdgeIfChanged(pressed, generation: generation, source: "event_tap")
     }
 
     static func physicalEdge(type: CGEventType, event: CGEvent, mode: VoiceKeyMode) -> Bool? {
@@ -186,6 +187,42 @@ final class MacMicrophoneVoiceKeyMonitor {
               event.getIntegerValueField(.keyboardEventKeycode) == Int64(mode.keyCode),
               event.getIntegerValueField(.eventSourceUserData) != KeyboardInjector.syntheticEventMarker else { return nil }
         return event.flags.contains(mode.eventFlags)
+    }
+
+    static func currentKeyState(mode: VoiceKeyMode) -> Bool {
+        CGEventSource.keyState(.hidSystemState, key: CGKeyCode(mode.keyCode))
+    }
+
+    private func pollKeyStateAndTapHealth() {
+        lock.lock()
+        guard port != nil else { lock.unlock(); return }
+        let generation = self.generation
+        let mode = self.mode
+        let healthDue = ProcessInfo.processInfo.systemUptime >= nextTapHealthCheckAt
+        if healthDue { nextTapHealthCheckAt = ProcessInfo.processInfo.systemUptime + 2 }
+        lock.unlock()
+
+        deliverEdgeIfChanged(Self.currentKeyState(mode: mode), generation: generation, source: "key_state_poll")
+        if healthDue { restoreTapIfDisabled(reason: "watchdog") }
+    }
+
+    private func deliverEdgeIfChanged(_ pressed: Bool, generation: UInt64, source: String) {
+        lock.lock()
+        guard port != nil, self.generation == generation,
+              pressed != lastObservedPressed else { lock.unlock(); return }
+        lastObservedPressed = pressed
+        lock.unlock()
+        let observedAt = ProcessInfo.processInfo.systemUptime
+        if source == "key_state_poll" {
+            AppLogger.shared.write(
+                "MAC MICROPHONE KEY_MONITOR phase=edge_recovered source=key_state_poll " +
+                    "edge=\(pressed ? "down" : "up") voice_key=\(mode.rawValue)"
+            )
+        }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.generation == generation else { return }
+            self.onEdge(pressed, observedAt)
+        }
     }
 
     /// Secure input and event-tap timeouts can leave a listen-only tap disabled even

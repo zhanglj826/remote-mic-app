@@ -73,7 +73,10 @@ final class MacMicrophoneSessionController {
     private(set) var operationID: UInt64 = 0
     private var startedAt: TimeInterval = 0
     private var deadline: VoiceFnTapScheduledTask?
+    private var recordingDeadline: VoiceFnTapScheduledTask?
     private var terminalFailure: MacMicrophoneFailure?
+    private var activeGesture: VoiceGestureMode = .hold
+    private static let maximumToggleRecordingDuration: TimeInterval = 300
     private var rearmAfterSystemResume = false
     private var systemResumeReceived = false
 
@@ -134,6 +137,7 @@ final class MacMicrophoneSessionController {
             captureRequested.toggle()
         }
         if captureRequested, pressed { requestedTriggerDownAt = observedAt }
+        if captureRequested, pressed { activeGesture = gesture }
         if preparingSelection { return }
         if captureRequested {
             if state == .armed { beginPreparation(entry: "voice_key", selectionOnly: false) }
@@ -182,6 +186,14 @@ final class MacMicrophoneSessionController {
                 self.deadline?.cancel()
                 self.deadline = nil
                 self.state = .recording
+                if self.activeGesture == .toggle {
+                    self.recordingDeadline?.cancel()
+                    self.recordingDeadline = self.schedule(Self.maximumToggleRecordingDuration) { [weak self] in
+                        guard let self, self.operationID == operation, self.state == .recording else { return }
+                        self.log("MAC MICROPHONE operation_id=\(operation) phase=safety_stop reason=toggle_recording_timeout timeout_ms=300000")
+                        self.stop(failure: .timedOut)
+                    }
+                }
                 self.log("MAC MICROPHONE operation_id=\(operation) phase=started result=capturing mode=physical_voice_key voice_key_injection=none key_event_passthrough=true target_activation=none target_response=unknown")
             }
         }
@@ -215,6 +227,8 @@ final class MacMicrophoneSessionController {
         terminalFailure = failure
         deadline?.cancel()
         deadline = nil
+        recordingDeadline?.cancel()
+        recordingDeadline = nil
         state = .stopping
         log("MAC MICROPHONE operation_id=\(operation) phase=stopping reason=\(failure?.rawValue ?? "user_stop")")
         // The capture barrier must finish before asking the player to drain.
@@ -283,6 +297,8 @@ final class MacMicrophoneSessionController {
         operationID &+= 1
         deadline?.cancel()
         deadline = nil
+        recordingDeadline?.cancel()
+        recordingDeadline = nil
         state = .failed(.interrupted)
         stopCapture {}
         log("MAC MICROPHONE operation_id=\(operation) phase=completed result=failed completion=forced reason=app_stop target_response=unknown")

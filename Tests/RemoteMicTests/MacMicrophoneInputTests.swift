@@ -271,11 +271,25 @@ struct MacMicrophoneInputTests {
             contentsOf: root.appendingPathComponent("Sources/RemoteMic/MacMicrophoneVoiceKeyMonitor.swift"),
             encoding: .utf8
         )
-        #expect(source.contains("timer.schedule(deadline: .now() + 2, repeating: 2)"))
+        #expect(source.contains("repeating: 0.02"))
+        #expect(source.contains("CGEventSource.keyState(.hidSystemState"))
+        #expect(source.contains("phase=edge_recovered source=key_state_poll"))
         #expect(source.contains("CGEvent.tapEnable(tap: port, enable: true)"))
         #expect(source.contains("result=\\(restored ? \"restored\" : \"still_disabled\")"))
         #expect(source.contains("rebuild=false"))
         #expect(!source.contains("recoverIfCurrent("))
+    }
+
+    @Test func toggleRecordingHasAFiveMinuteSafetyStop() {
+        let h = MacMicrophoneHarness(); h.arm()
+        h.controller.handleVoiceKey(pressed: true, gesture: .toggle)
+        h.prepareCompletion?(nil); h.startCompletion?(nil)
+        #expect(h.controller.state == .recording)
+        h.recordingTimeout?()
+        #expect(h.controller.state == .stopping)
+        h.stopCompletion?(); h.drainCompletion?(true)
+        #expect(h.controller.state == .failed(.timedOut))
+        #expect(h.logs.contains { $0.contains("reason=toggle_recording_timeout") })
     }
 
     @Test(arguments: [44_100.0, 48_000.0])
@@ -516,6 +530,7 @@ private final class MacMicrophoneHarness {
     var stopCompletion: (() -> Void)?
     var drainCompletion: ((Bool) -> Void)?
     var timeout: (() -> Void)?
+    var recordingTimeout: (() -> Void)?
     func arm() {
         controller.toggle(from: .connectionPage)
         prepareCompletion?(nil)
@@ -532,7 +547,11 @@ private final class MacMicrophoneHarness {
         stopCapture: { self.events.append("stop_capture"); self.stopCompletion = $0 },
         drain: { self.events.append("drain"); self.drainCompletion = $0 },
         finish: { self.events.append("finish") },
-        schedule: { _, action in self.timeout = action; return VoiceFnTapScheduledTask {} },
+        schedule: { delay, action in
+            if delay >= 300 { self.recordingTimeout = action }
+            else { self.timeout = action }
+            return VoiceFnTapScheduledTask {}
+        },
         log: { self.logs.append($0) }
     )
 }

@@ -28,10 +28,11 @@
 - 如果唤醒早于旧采集排空完成，先记录 `phase=resume_deferred`，等停止终态完成后再重新待命。
 - 如果 Mac 麦克风在挂起前未启用，唤醒不自动启用。
 - event tap 收到系统禁用通知后延迟尝试恢复，并在待命期间每 2 秒检查一次；只重新启用原 tap，不在回调内销毁重建。持续禁用时日志最多每 30 秒记录一次，恢复时记录一次 `result=restored`。
+- Build 178 再次复现时，event tap 持续报告启用，但 operation 11 从 14:43:43 起不再收到停止边沿，Mac 麦克风持续产生 PCM。这确认仅检查 tap 启用状态仍不充分。修复增加 20ms HID 系统按键状态兜底，并与 event tap 边沿去重；兜底命中记录 `source=key_state_poll`。短按切换会话另设 5 分钟强制安全停止，避免任何监听故障造成无限采集。
 
 ## 验证
 
-- `swift test --disable-keychain --filter MacMicrophoneInputTests`：event tap 恢复补丁完成后 29 项通过。
+- `swift test --disable-keychain --filter MacMicrophoneInputTests`：HID 按键状态兜底和录音安全停止完成后 30 项通过。
 - 新增覆盖：待命状态挂起/唤醒后重新待命且不自动采集；录音中快速挂起/唤醒时等待排空再恢复；原本关闭时唤醒不自动开启。
 - `git diff --check`：通过。
 
