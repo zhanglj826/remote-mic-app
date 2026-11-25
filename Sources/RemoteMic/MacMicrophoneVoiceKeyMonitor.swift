@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import IOKit.hid
 
 private func macMicrophoneVoiceKeyCallback(
     proxy: CGEventTapProxy, type: CGEventType, event: CGEvent,
@@ -12,6 +13,17 @@ private func macMicrophoneVoiceKeyCallback(
     }
     // A listen-only tap never consumes or replaces the user's key.
     return Unmanaged.passUnretained(event)
+}
+
+private func macMicrophoneHIDValueCallback(
+    context: UnsafeMutableRawPointer?,
+    result: IOReturn,
+    sender: UnsafeMutableRawPointer?,
+    value: IOHIDValue
+) {
+    guard result == kIOReturnSuccess, let context else { return }
+    Unmanaged<MacMicrophoneVoiceKeyMonitor>.fromOpaque(context)
+        .takeUnretainedValue().observeHIDValue(value)
 }
 
 /// Observes the configured physical voice modifier, including Fn, without registering it as a hotkey.
@@ -32,6 +44,7 @@ final class MacMicrophoneVoiceKeyMonitor {
     private var tapLevel: TapLevel?
     private var globalMonitor: Any?
     private var localMonitor: Any?
+    private var hidManager: IOHIDManager?
     private var watchdogTimer: Timer?
     private var generation: UInt64 = 0
     private var mode: VoiceKeyMode = .function
@@ -40,7 +53,7 @@ final class MacMicrophoneVoiceKeyMonitor {
     @discardableResult
     func start(mode: VoiceKeyMode) -> Bool {
         lock.lock()
-        let alreadyListening = (port != nil || globalMonitor != nil) && self.mode == mode
+        let alreadyListening = (port != nil || globalMonitor != nil || hidManager != nil) && self.mode == mode
         lock.unlock()
         if alreadyListening { return true }
         stop()
@@ -70,7 +83,10 @@ final class MacMicrophoneVoiceKeyMonitor {
         // 2. 高层 AppKit NSEvent 监视器（全局+本地，不被 WindowServer 超时挂起，永不失活）
         installAppKitMonitors(mode: mode)
 
-        // 3. 启动看门狗定时器，每 3 秒检测底层 tap 状态
+        // 3. 底层 IOHIDManager 只读监听（位于 CGEventTap 之下，避免被其他 App 主动 tap 吞掉按下事件）
+        installHIDMonitor(mode: mode)
+
+        // 4. 启动看门狗定时器，每 3 秒检测底层 tap 状态
         startWatchdog()
 
         if !tapInstalled && globalMonitor == nil {
@@ -104,6 +120,59 @@ final class MacMicrophoneVoiceKeyMonitor {
             }
             self.lock.unlock()
             AppLogger.shared.write("MAC MICROPHONE KEY_MONITOR phase=appkit_monitors_started voice_key=\(mode.rawValue)")
+        }
+    }
+
+    private func installHIDMonitor(mode: VoiceKeyMode) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let currentGen = self.generation
+            if let existing = self.hidManager {
+                self.hidManager = nil
+                self.lock.unlock()
+                IOHIDManagerUnscheduleFromRunLoop(existing, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
+                IOHIDManagerClose(existing, IOOptionBits(kIOHIDOptionsTypeNone))
+            } else {
+                self.lock.unlock()
+            }
+
+            let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
+            let matching: [[String: Any]] = [
+                [
+                    kIOHIDDeviceUsagePageKey as String: kHIDPage_GenericDesktop,
+                    kIOHIDDeviceUsageKey as String: kHIDUsage_GD_Keyboard,
+                ],
+                [
+                    kIOHIDDeviceUsagePageKey as String: 0x00FF,
+                    kIOHIDDeviceUsageKey as String: 0x0003,
+                ],
+            ]
+            IOHIDManagerSetDeviceMatchingMultiple(manager, matching as CFArray)
+            let context = Unmanaged.passUnretained(self).toOpaque()
+            IOHIDManagerRegisterInputValueCallback(manager, macMicrophoneHIDValueCallback, context)
+            IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
+            let result = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+            guard result == kIOReturnSuccess else {
+                IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
+                IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+                AppLogger.shared.write("MAC MICROPHONE KEY_MONITOR phase=failed reason=iohid_open_failed code=\(result)")
+                return
+            }
+
+            self.lock.lock()
+            let stillValid = self.generation == currentGen
+            if stillValid {
+                self.hidManager = manager
+            }
+            self.lock.unlock()
+
+            if !stillValid {
+                IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
+                IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+                return
+            }
+            AppLogger.shared.write("MAC MICROPHONE KEY_MONITOR phase=iohid_monitor_started voice_key=\(mode.rawValue)")
         }
     }
 
@@ -233,11 +302,13 @@ final class MacMicrophoneVoiceKeyMonitor {
         let tapLevel = self.tapLevel?.rawValue ?? "unknown"
         let globalMonitor = self.globalMonitor
         let localMonitor = self.localMonitor
+        let hidManager = self.hidManager
         self.port = nil
         self.source = nil
         self.tapLevel = nil
         self.globalMonitor = nil
         self.localMonitor = nil
+        self.hidManager = nil
         self.lastDispatchedEdge = nil
         generation &+= 1
         lock.unlock()
@@ -251,10 +322,14 @@ final class MacMicrophoneVoiceKeyMonitor {
             if let localMonitor {
                 NSEvent.removeMonitor(localMonitor)
             }
+            if let hidManager {
+                IOHIDManagerUnscheduleFromRunLoop(hidManager, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
+                IOHIDManagerClose(hidManager, IOOptionBits(kIOHIDOptionsTypeNone))
+            }
         }
 
         if port != nil || source != nil { EventTapPort.release(port: port, source: source) }
-        if port != nil || globalMonitor != nil || localMonitor != nil {
+        if port != nil || globalMonitor != nil || localMonitor != nil || hidManager != nil {
             AppLogger.shared.write("MAC MICROPHONE KEY_MONITOR phase=completed result=stopped tap=\(tapLevel)")
         }
     }
@@ -290,6 +365,55 @@ final class MacMicrophoneVoiceKeyMonitor {
         guard port != nil, let pressed = Self.physicalEdge(type: type, event: event, mode: mode) else { return }
         let observedAt = ProcessInfo.processInfo.systemUptime
         dispatchEdgeSafely(pressed: pressed, observedAt: observedAt, generation: generation, source: "cgevent_tap")
+    }
+
+    func observeHIDValue(_ value: IOHIDValue) {
+        lock.lock()
+        guard hidManager != nil else {
+            lock.unlock()
+            return
+        }
+        let generation = self.generation
+        let mode = self.mode
+        lock.unlock()
+
+        let element = IOHIDValueGetElement(value)
+        let usagePage = IOHIDElementGetUsagePage(element)
+        let usage = IOHIDElementGetUsage(element)
+        let integerValue = IOHIDValueGetIntegerValue(value)
+        guard let pressed = Self.hidEdge(
+            usagePage: usagePage,
+            usage: usage,
+            integerValue: integerValue,
+            mode: mode
+        ) else { return }
+
+        let observedAt = ProcessInfo.processInfo.systemUptime
+        dispatchEdgeSafely(pressed: pressed, observedAt: observedAt, generation: generation, source: "iohid_manager")
+    }
+
+    static func hidEdge(usagePage: UInt32, usage: UInt32, integerValue: CFIndex, mode: VoiceKeyMode) -> Bool? {
+        switch mode {
+        case .function:
+            guard usagePage == 0x00FF, usage == 0x0003 else { return nil }
+            return integerValue != 0
+        case .leftCommand:
+            guard usagePage == UInt32(kHIDPage_KeyboardOrKeypad),
+                  usage == UInt32(kHIDUsage_KeyboardLeftGUI) else { return nil }
+            return integerValue != 0
+        case .rightCommand:
+            guard usagePage == UInt32(kHIDPage_KeyboardOrKeypad),
+                  usage == UInt32(kHIDUsage_KeyboardRightGUI) else { return nil }
+            return integerValue != 0
+        case .leftOption:
+            guard usagePage == UInt32(kHIDPage_KeyboardOrKeypad),
+                  usage == UInt32(kHIDUsage_KeyboardLeftAlt) else { return nil }
+            return integerValue != 0
+        case .rightOption:
+            guard usagePage == UInt32(kHIDPage_KeyboardOrKeypad),
+                  usage == UInt32(kHIDUsage_KeyboardRightAlt) else { return nil }
+            return integerValue != 0
+        }
     }
 
     static func physicalEdge(type: CGEventType, event: CGEvent, mode: VoiceKeyMode) -> Bool? {

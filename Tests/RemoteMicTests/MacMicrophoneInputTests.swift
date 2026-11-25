@@ -208,6 +208,40 @@ struct MacMicrophoneInputTests {
         #expect(MacMicrophoneVoiceKeyMonitor.physicalEdge(type: .flagsChanged, event: release, mode: .function) == false)
     }
 
+    @Test func hidEdgeDetectsAllSupportedVoiceKeysAndIgnoresOtherUsages() {
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x00FF, usage: 0x0003, integerValue: 1, mode: .function) == true)
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x00FF, usage: 0x0003, integerValue: 0, mode: .function) == false)
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x07, usage: 0xE6, integerValue: 1, mode: .function) == nil)
+
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x07, usage: 0xE2, integerValue: 1, mode: .leftOption) == true)
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x07, usage: 0xE2, integerValue: 0, mode: .leftOption) == false)
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x07, usage: 0xE6, integerValue: 1, mode: .leftOption) == nil)
+
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x07, usage: 0xE6, integerValue: 1, mode: .rightOption) == true)
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x07, usage: 0xE6, integerValue: 0, mode: .rightOption) == false)
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x07, usage: 0xE2, integerValue: 1, mode: .rightOption) == nil)
+
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x07, usage: 0xE3, integerValue: 1, mode: .leftCommand) == true)
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x07, usage: 0xE3, integerValue: 0, mode: .leftCommand) == false)
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x07, usage: 0xE7, integerValue: 1, mode: .leftCommand) == nil)
+
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x07, usage: 0xE7, integerValue: 1, mode: .rightCommand) == true)
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x07, usage: 0xE7, integerValue: 0, mode: .rightCommand) == false)
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x07, usage: 0xE3, integerValue: 1, mode: .rightCommand) == nil)
+    }
+
+    @Test func hidEdgeMapsConfiguredPhysicalVoiceKeysAndIgnoresOthers() {
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x00FF, usage: 0x0003, integerValue: 1, mode: .function) == true)
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x00FF, usage: 0x0003, integerValue: 0, mode: .function) == false)
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x07, usage: 0xE6, integerValue: 1, mode: .rightOption) == true)
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x07, usage: 0xE6, integerValue: 0, mode: .rightOption) == false)
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x07, usage: 0xE2, integerValue: 1, mode: .leftOption) == true)
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x07, usage: 0xE3, integerValue: 1, mode: .leftCommand) == true)
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x07, usage: 0xE7, integerValue: 1, mode: .rightCommand) == true)
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x07, usage: 0xE2, integerValue: 1, mode: .rightOption) == nil)
+        #expect(MacMicrophoneVoiceKeyMonitor.hidEdge(usagePage: 0x07, usage: 0x04, integerValue: 1, mode: .rightOption) == nil)
+    }
+
     @Test(arguments: [44_100.0, 48_000.0])
     func converterPreservesSplitBufferOrderAndEndOfStreamTail(_ sampleRate: Double) throws {
         let format = try #require(AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2))

@@ -67,8 +67,11 @@ flowchart TD
   - `NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged)`：捕获其他前台 App 激活时的物理按键边沿。
   - `NSEvent.addLocalMonitorForEvents(matching: .flagsChanged)`：捕获当前 App 为前台激活窗口时的按键边沿。
   - AppKit 监视器运行在更高层级，不受 WindowServer 针对底层 EventTap 的空闲超时机制影响，只要进程在运行就绝对不会失效。
+- **通道 C（底层 `IOHIDManager` 原始 HID 键盘输入监听）**：
+  - 使用 `IOHIDManagerCreate(..., kIOHIDOptionsTypeNone)` 只读旁路监听物理键盘与 Apple TopCase `Fn` 输入值，不独占设备。
+  - 工作在 `CGEventTap` 之下的 IOKit 层，即使其他 App 的主动 `CGEventTap` 吞掉了按下事件（如 `Right Option` key-down），`IOHIDManager` 仍能稳定捕获原始按下与抬起边沿。
 - **50ms 边沿去重器**：
-  - 双通道同时捕获到同一按键事件时，以 `(pressed, observedAt)` 与 50ms 时间窗口进行去重，确保点按 Toggle 时只触发一次状态翻转。
+  - 多通道同时捕获到同一按键事件时，以 `(pressed, observedAt)` 与 50ms 时间窗口进行去重，确保点按 Toggle 时只触发一次状态翻转。
 - **看门狗巡检（Watchdog）**：
   - 启动每 3 秒触发一次的保安定时器，检查 `CGEvent.tapIsEnabled(tap: port)`，若发现被 WindowServer 挂起，立即调用 `CGEvent.tapEnable` 重新唤醒。
 
